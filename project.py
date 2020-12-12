@@ -50,12 +50,23 @@ class my_waterworld(WaterWorld):
 		for i in state['creep_pos']['BAD']:
 			i.append(0)
 
+
 		creeps_pos = np.array(state['creep_pos']['GOOD']).flatten()
 		creeps_pos = np.concatenate([creeps_pos, np.array(state['creep_pos']['BAD']).flatten()])
+		
+		score = state['score'] * 10	
 
-		game_state = np.concatenate([np.array([state['player_x'], state['player_y'], state['player_velocity_x'], state['player_velocity_y'], state['score']]), creeps_pos])
+		for i in state['creep_dist']['GOOD']:
+			if i <= 210.0:
+				score += -0.033 * i + 6.0
 
-		return game_state
+		for i in state['creep_dist']['BAD']:
+			if i <= 210.0:
+				score -= -0.033 * i + 6.0
+
+		game_state = np.concatenate([np.array([state['player_x'], state['player_y'], state['player_velocity_x'], state['player_velocity_y']]), creeps_pos])
+
+		return game_state, score
 
 
 class ReplayMemory(object):
@@ -68,7 +79,7 @@ class Agent(object):
 		self.actions = ['left','right','up','down']
 
 	def build_model(self):
-		inputs = keras.Input(shape=(35,))
+		inputs = keras.Input(shape=(34,))
 		hidden_1 = layers.Dense(128, activation='relu')(inputs)
 		hidden_2 = layers.Dense(128, activation='relu')(hidden_1)
 		outputs = layers.Dense(4, activation='linear')(hidden_2)
@@ -78,14 +89,14 @@ class Agent(object):
 		model.compile(loss=lambda x : x**2, optimizer='adam')
 		self.model = model	
 	
-	def predict_single(self, state):
+	def predict_move(self, state):
 		q_values = self.model.predict(np.array([state]))
-		print(q_values)
-		return self.actions[np.argmax(q_values)]
+		return [self.actions[np.argmax(q_values)], q_values]
 
 	def rand_act(self):
 		r = Random()
 		return self.actions[r.randint(0,3)]
+
 
 if __name__ == '__main__':
 
@@ -94,26 +105,43 @@ if __name__ == '__main__':
 	game.screen = pygame.display.set_mode(game.getScreenDims(), 0, 32)
 	game.clock = pygame.time.Clock()
 	game.rng = np.random.RandomState(24)
-	game.init()
+	
 	
 	agent = Agent()
 	agent.build_model()
 	memory_size = 100000
-	epochs = 100
+	epochs = 10
 	num_steps = 15000
 	epsilon = 1
+	gamma = 0.9
 
 	for epoch in range(1, epochs + 1):
 		steps, num_episodes = 0, 0
 		losses, rewards = [], []
-		game.display_screen = False
-
+		game.init()
+		
 		while not game.game_over() and steps < num_steps:
 			dt = game.clock.tick_busy_loop(30)
-			print(game.getState())
-			# game.agent_step(dt, agent.predict_single(game.getState()))
-			game.agent_step(dt, agent.rand_act())
+			current_state, score = game.getState()
+
+			r = Random()
+			if r.uniform(0.0, 1.) < epsilon:
+				action = agent.rand_act()
+			else:
+				action = agent.predict_move(current_state)[0]
+
+			game.agent_step(dt, action)
+			next_state, next_score = game.getState()
+			reward =  next_score - score
+
+			next_action, q_values = agent.predict_move(next_state)
+			target = (1 - gamma) * reward + gamma * np.max(q_values)
+
+			agent.model.train_on_batch(np.array([current_state]), [i if index != agent.actions.index(next_action) else target for index, i in enumerate(q_values[0])])
+			
 			pygame.display.update()
-			# print(.shape)
+			steps += 1
+			epsilon -= 0.001
+
 
 
