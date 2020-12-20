@@ -1,72 +1,69 @@
 import numpy as np
 from ple.games.waterworld import *
+from ple import PLE
 from random import Random
 from tensorflow import keras
 from keras import layers
+import math
+
+def inside(x, center_x, y, center_y, radius):
+	return (x - center_x) ** 2 + (y - center_y) ** 2 <= radius ** 2
+
+def get_x(radians, r, x):
+	return r * math.cos(radians) + x
+
+def get_y(radians, r, y):
+	return r * math.sin(radians) + y
+
+def get_function(x1, x2, y1, y2):
+	return lambda x: ((x - x1) * (y2 - y1) / (x2 - x1)) + y1 
+
+def getState(p, RADIUS):
+	state = p.getGameState()
+	score = p.score()
+
+	pi = 3.14
+	number_sensors = 30
+	look_for_radius = 250
+	player_x = state['player_x']
+	player_y = state['player_y']
+	sensors_functions = []
+	extremums = []
+
+	for i in range(1, number_sensors + 1):
+		extreme_x = get_x((2 * pi / number_sensors) * i, look_for_radius, player_x)
+		extreme_y = get_y((2 * pi / number_sensors) * i, look_for_radius, player_y)
+		extremums.append([extreme_x, extreme_y])
+		sensors_functions.append(get_function(player_x, extreme_x, player_y, extreme_y))
+
+	sensors = np.zeros((number_sensors,1))
+
+	for idx, f in enumerate(sensors_functions):
+		for x_coord in range(min(int(player_x), int(extremums[idx][0]) + 1), max(int(player_x), int(extremums[idx][0]) + 1)):
+			for index, creep_pos in enumerate(state['creep_pos']['GOOD']):
+				if (0 <= x_coord <= 512) and inside(x_coord, creep_pos[0], f(x_coord), creep_pos[1], RADIUS):
+					if sensors[idx] != 0:
+						if abs(sensors[idx]) > state['creep_dist']['GOOD'][index]:
+							sensors[idx] = state['creep_dist']['GOOD'][index] // 25
+					else:
+						sensors[idx] = state['creep_dist']['GOOD'][index] // 25
 
 
+	for idx, f in enumerate(sensors_functions):
+		for x_coord in range(min(int(player_x), int(extremums[idx][0]) + 1), max(int(player_x), int(extremums[idx][0]) + 1)):
+			for index, creep_pos in enumerate(state['creep_pos']['BAD']):
+				if (0 <= x_coord <= 512) and inside(x_coord, creep_pos[0], f(x_coord), creep_pos[1], RADIUS):
+					if sensors[idx] != 0:
+						if abs(sensors[idx]) > state['creep_dist']['BAD'][index]:
+							sensors[idx] = -1 * (state['creep_dist']['BAD'][index] // 25)
+					else:
+						sensors[idx] = -1 * (state['creep_dist']['BAD'][index] // 25)
 
-class my_waterworld(WaterWorld):
+	sensors = np.array(sensors).flatten()
 
-	def _agent_act(self, key):
-		self.dx = 0
-		self.dy = 0
-		if key == 'up':
-			self.dy -= self.AGENT_SPEED // 4
-		if key == 'down':
-			self.dy += self.AGENT_SPEED // 4
-		if key == 'left':
-			self.dx -= self.AGENT_SPEED // 4
-		if key == 'right':
-			self.dx += self.AGENT_SPEED // 4
-
-	def agent_step(self, dt, action):
-		dt /= 1000.0
-		self.screen.fill(self.BG_COLOR)
-
-		self.score += self.rewards["tick"]
-		self._agent_act(action)
-		self.player.update(self.dx, self.dy, dt)
-
-		hits = pygame.sprite.spritecollide(self.player, self.creeps, True)
-		for creep in hits:
-			self.creep_counts[creep.TYPE] -= 1
-			self.score += creep.reward
-			self._add_creep()
-		
-		if self.creep_counts["GOOD"] == 0:
-			self.score += self.rewards["win"]
-		self.creeps.update(dt)
-		
-		self.player.draw(self.screen)
-		self.creeps.draw(self.screen)
-
-	def getState(self):
-		state = super().getGameState()
-		state['score'] = self.getScore()
-		
-		for i in state['creep_pos']['GOOD']:
-			i.append(1)
-		for i in state['creep_pos']['BAD']:
-			i.append(0)
-
-
-		creeps_pos = np.array(state['creep_pos']['GOOD']).flatten()
-		creeps_pos = np.concatenate([creeps_pos, np.array(state['creep_pos']['BAD']).flatten()])
-		
-		score = state['score'] * 1000
-
-		for i in state['creep_dist']['GOOD']:
-			if i <= 300.0:
-				score += (-0.033 * i + 6.0) * 10
-
-		for i in state['creep_dist']['BAD']:
-			if i <= 300.0:
-				score -= (-0.033 * i + 6.0) * 100
-
-		game_state = np.concatenate([np.array([state['player_x'], state['player_y'], state['player_velocity_x'], state['player_velocity_y']]), creeps_pos])
-
-		return game_state, score
+	# game_state = np.concatenate([np.array([state['player_x'], state['player_y'], state['player_velocity_x'], state['player_velocity_y']]), sensors])
+	
+	return sensors, score
 
 
 class ReplayMemory(object):	
@@ -83,35 +80,41 @@ class ReplayMemory(object):
 
 	def perform_batch(self, agent):
 		r = Random()
-		random_memory_states = r.choices(self.states, k=20)
-		states = []
+		random_memory_states = r.choices(self.states, k=100)
+		states = np.array([i[0] for i in random_memory_states])
 		targets = []
 
-		for state in random_memory_states:
-			states.append(np.array([state[0]]))
-			next_action, q_values = agent.predict_move(state[0])
-			if state[3] != 1:
-				targets.append(np.array([i if index != agent.actions.index(next_action) else (reward + gamma * np.max(q_values)) for index, i in enumerate(q_values[0])]))
-			else:
-				targets.append(np.array([i if index != agent.actions.index(next_action) else reward for index, i in enumerate(q_values[0])]))
+		for memorized in random_memory_states:
+			action_taken = memorized[1]
+			current_q_vals = agent.predict_move(memorized[0])[1] # current
+			next_q_values = agent.predict_move(memorized[3])[1] # next 
+			q_max = np.max(next_q_values)
+			target = reward + gamma * q_max
+
+			targets.append(np.array([i if index != agent.actions.index(action_taken) else target for index, i in enumerate(current_q_vals[0])]))
+		
+		targets = np.array([i for i in targets])
 
 		return agent.model.train_on_batch(states, targets)
 		
 
 class Agent(object):
-	def __init__(self):
-		self.actions = ['left','right','up','down']
+	def __init__(self, actions, model=None):
+		self.actions = actions[:4]
+		self.model = model
 
 	def build_model(self):
-		inputs = keras.Input(shape=(34,))
-		hidden_1 = layers.Dense(256, activation='relu')(inputs)
-		hidden_2 = layers.Dense(256, activation='relu')(hidden_1)
-		outputs = layers.Dense(4, activation='linear')(hidden_2)
+		model = keras.Sequential(
+    	[
+	        layers.Dense(30, input_shape=(30,), activation="relu", name="layer1"),
+	        layers.Dense(200, activation="relu", name="layer2"),
+	        layers.Dense(4, activation="linear", name="layer3"),
+    	])
 
-		model = keras.Model(inputs=inputs, outputs=outputs)
-
-		model.compile(loss='mse', optimizer='adam')
+		model.compile(loss=keras.losses.Huber(), optimizer='RMSprop')
 		self.model = model	
+
+
 	
 	def predict_move(self, state):
 		q_values = self.model.predict(np.array([state]))
@@ -124,69 +127,90 @@ class Agent(object):
 
 if __name__ == '__main__':
 
+	fps = 30  
+	num_steps = 1
+	force_fps = True
+	display_screen = True
+
+
 	pygame.init()
-	game = my_waterworld(width=512, height=512, num_creeps=10)
-	game.screen = pygame.display.set_mode(game.getScreenDims(), 0, 32)
-	game.clock = pygame.time.Clock()
-	game.rng = np.random.RandomState(24)
-	
-	
-	agent = Agent()
+
+	game = WaterWorld(width=512, height=512, num_creeps=10)
+	p = PLE(game, fps=fps, num_steps=num_steps,
+        force_fps=force_fps, display_screen=display_screen)
+
+	RADIUS = game.AGENT_RADIUS
+	agent = Agent(actions=p.getActionSet())
 	agent.build_model()
 	memory_size = 50000
-	min_memory_size = 15000
+	min_memory_size = 100
 	memory = ReplayMemory(memory_size)
-	epochs = 10
-	num_steps = 10000
+	epochs = 50
+	num_steps = 1000
 	epsilon = 1
 	epsilon_min = 0.1
-	epsilon_decay = (epsilon - epsilon_min) / 30000
+	epsilon_decay = (epsilon - epsilon_min) / 50000
 	gamma = 0.9
+	freq = 10
+	rewards = {10:1, 9:2, 8:3, 7:4, 6:5, 5:6, 4:7, 3:8, 2:9, 1:10, 0:0}
+	steps = 0
 
 	for epoch in range(1, epochs + 1):
-		steps, num_episodes = 0, 0
-		losses, rewards = [], []
 		steps = 0
-		game.init()
+		g = 0
+		b = 0
 
-		while not game.game_over() and steps < num_steps:
-			dt = game.clock.tick_busy_loop(30)
-			current_state, score = game.getState()
+		if p.game_over():
+			p.init()
 
+		while not p.game_over() and steps < num_steps:
+			current_state, score = getState(p, RADIUS)
+				
 			r = Random()
-			if r.uniform(0.0, 1.) < epsilon:
+			randint = r.uniform(0., 1.)
+			if randint < epsilon:
 				action = agent.rand_act()
 			else:
 				action = agent.predict_move(current_state)[0]
 
-			game.agent_step(dt, action)
-			next_state, next_score = game.getState()
-			reward =  next_score - score
-			
-			memory.add([current_state, action, reward, game.game_over()])
-			
-			rewards.append(reward)
-		
-			if len(memory.states) >= min_memory_size:
-				loss = memory.perform_batch(agent)
-				losses.append(loss)
-			else:
-				pygame.display.update()
+			p.act(action)
 
-			print(steps)
+			next_state, next_score = getState(p, RADIUS)
+			reward =  next_score - score
+
+			
+			if reward not in [-1, 1]:
+				reward -= 5
+				for s in next_state:
+					if s > 0:
+						reward += rewards[s]
+					else:
+						reward -= rewards[abs(s)]
+			else:
+				if reward == 1:
+					reward = 1000
+				else:
+					reward = -2000
+
+
+			if reward == 1:
+				g += 1
+			if reward == -1:
+				b += 1
+
+			memory.add([current_state, action, reward, next_state])
+		
+			if len(memory.states) >= min_memory_size and steps % freq == 0:
+				loss = memory.perform_batch(agent)
+				print(steps)
+			
 			steps += 1
 			if epsilon > epsilon_min:
 				epsilon = epsilon - epsilon_decay
-		print(np.mean(rewards))
-		print(np.mean(losses))
-		print(epoch, epsilon)
 
-	agent.model.save('model_14_dec')
-	game.init()
-	while not game.game_over():
-		dt = game.clock.tick_busy_loop(30)
-		current_state, score = game.getState()
-		action = agent.predict_move(current_state)[0]
-		game.agent_step(dt, action)
-		pygame.display.update()
+		print(epoch)
+		print(g,b)
+
+	agent.model.save('model_18_dec' + str(g))
+
 
