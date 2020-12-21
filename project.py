@@ -168,7 +168,7 @@ if __name__ == '__main__':
 				
 			r = Random()
 			randint = r.uniform(0., 1.)
-			if randint < epsilon:
+			if randint < epsilon:					# alegem actiunea random sau din experienta
 				action = agent.rand_act()
 			else:
 				action = agent.predict_move(current_state)[0]
@@ -179,7 +179,7 @@ if __name__ == '__main__':
 			reward =  next_score - score
 
 			
-			if reward not in [-1, 1]:
+			if reward not in [-1, 1]:				# primim reward-ul in dependenta de distanta 
 				reward -= 5
 				for s in next_state:
 					if s > 0:
@@ -189,23 +189,20 @@ if __name__ == '__main__':
 			else:
 				if reward == 1:
 					reward = 1000
+					g += 1
 				else:
 					reward = -2000
-
-
-			if reward == 1:
-				g += 1
-			if reward == -1:
-				b += 1
+					b += 1
+				
 
 			memory.add([current_state, action, reward, next_state])
 		
-			if len(memory.states) >= min_memory_size and steps % freq == 0:
+			if len(memory.states) >= min_memory_size and steps % freq == 0:		# invatarea
 				loss = memory.perform_batch(agent)
 				print(steps)
 			
 			steps += 1
-			if epsilon > epsilon_min:
+			if epsilon > epsilon_min:		# scadem probabilitatea de a alege actiunea random
 				epsilon = epsilon - epsilon_decay
 
 		print(epoch)
